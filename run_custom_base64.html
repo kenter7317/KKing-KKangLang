@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Custom Base64 Hangul — 실행 페이지</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", Arial; padding: 20px; }
+    textarea { width: 100%; height: 120px; font-family: monospace; }
+    input[type=text] { width: 100%; }
+    button { margin-top: 8px; }
+    .row { margin-bottom: 12px; }
+    pre { background: #f5f5f5; padding: 12px; overflow:auto }
+  </style>
+</head>
+<body>
+  <h1>Custom Base64 Hangul (뿡...뽕) — 실행 페이지</h1>
+  <p>이 페이지는 로컬에서 Python 없이도 브라우저에서 바로 <strong>인코드 / 디코드 / 테스트</strong>를 실행합니다. Pyodide를 사용합니다.</p>
+
+  <div class="row">
+    <label>동작: <select id="mode"><option value="encode">인코드(텍스트 → 토큰)</option><option value="decode">디코드(토큰 → 출력)</option></select></label>
+  </div>
+
+  <div class="row">
+    <label>입력(인코드일 때는 원문, 디코드일 때는 토큰):</label>
+    <textarea id="input">hello world</textarea>
+  </div>
+
+  <div class="row">
+    <button id="run">실행</button>
+    <button id="run-test">내장 테스트 실행</button>
+  </div>
+
+  <div class="row">
+    <label>출력:</label>
+    <pre id="output">(대기중)</pre>
+  </div>
+
+  <details>
+    <summary>사용된 Python 코드(참고)</summary>
+    <pre id="pycode" style="white-space:pre-wrap"></pre>
+  </details>
+
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.23.4/full/pyodide.js"></script>
+  <script>
+    const pySrc = `"""
+Custom runtime copy of custom_base64_hangul.py (for browser use via Pyodide)
+This copy defines convenience wrappers js_encode / js_decode for easy JS interop.
+"""
+
+import base64
+
+HANGUL_BITS = ['낑', '깡', '삐', '앙', '버', '거']  # MSB -> LSB (비트 5..0)
+BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+START_DELIM = '뿡'
+END_DELIM = '뽕'
+PADDING_MARKER = '='
+
+
+def bytes_to_custom_tokens(data: bytes) -> str:
+    b64 = base64.b64encode(data).decode('ascii')
+    out = []
+    for ch in b64:
+        if ch == '=':
+            out.append(f"{START_DELIM}{PADDING_MARKER}{END_DELIM}")
+            continue
+        idx = BASE64_ALPHABET.index(ch)
+        present = []
+        for i, hangul in enumerate(HANGUL_BITS):
+            bit = (idx >> (5 - i)) & 1
+            if bit:
+                present.append(hangul)
+        out.append(START_DELIM + ''.join(present) + END_DELIM)
+    return ''.join(out)
+
+
+def custom_tokens_to_bytes(token_str: str) -> bytes:
+    i = 0
+    n = len(token_str)
+    b64_chars = []
+    while i < n:
+        if token_str[i] != START_DELIM:
+            raise ValueError(f"Invalid format at pos {i}: expected start delimiter '{START_DELIM}'")
+        i += 1
+        j = token_str.find(END_DELIM, i)
+        if j == -1:
+            raise ValueError(f"Missing end delimiter '{END_DELIM}' after pos {i}")
+        content = token_str[i:j]
+        i = j + 1
+        if content == PADDING_MARKER:
+            b64_chars.append('=')
+            continue
+        idx = 0
+        for hangul in HANGUL_BITS:
+            idx <<= 1
+            if hangul in content:
+                idx |= 1
+        for ch in content:
+            if ch not in HANGUL_BITS:
+                raise ValueError(f"Unknown token character '{ch}' inside token")
+        b64_chars.append(BASE64_ALPHABET[idx])
+    b64_str = ''.join(b64_chars)
+    return base64.b64decode(b64_str)
+
+# JS-friendly wrappers
+
+def js_encode(s: str) -> str:
+    return bytes_to_custom_tokens(s.encode('utf-8'))
+
+
+def js_decode(tok: str):
+    data = custom_tokens_to_bytes(tok)
+    try:
+        text = data.decode('utf-8')
+    except Exception:
+        text = '<binary>'
+    return {'hex': data.hex(), 'text': text}
+
+# small convenience test function for Pyodide
+
+def js_run_tests():
+    samples = [b"", b"f", b"fo", b"foo", b"hello world", b"\x00\xff\x10\x20"]
+    out = []
+    for s in samples:
+        tok = bytes_to_custom_tokens(s)
+        back = custom_tokens_to_bytes(tok)
+        out.append((s.decode('latin1'), tok, back.hex()))
+    return out
+`;
+
+    // put python code into the details area for user visibility
+    document.getElementById('pycode').textContent = pySrc;
+
+    let pyodideReady = null;
+
+    async function loadPyodideAndInit(){
+      document.getElementById('output').textContent = 'Pyodide 로딩 중... 조금만 기다려주세요.';
+      self.pyodide = await loadPyodide({indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.23.4/full/'});
+      await self.pyodide.loadPackage([]); // no extra packages
+      // execute the embedded Python module
+      await self.pyodide.runPythonAsync(pySrc);
+      document.getElementById('output').textContent = '준비 완료. 입력 후 실행하세요.';
+    }
+
+    loadPyodideAndInit();
+
+    document.getElementById('run').addEventListener('click', async ()=>{
+      const mode = document.getElementById('mode').value;
+      const input = document.getElementById('input').value;
+      const outEl = document.getElementById('output');
+      outEl.textContent = '실행 중...';
+      try {
+        if(!self.pyodide){
+          outEl.textContent = 'Pyodide가 아직 로드되지 않았습니다.';
+          return;
+        }
+        if(mode === 'encode'){
+          const js_encode = self.pyodide.globals.get('js_encode');
+          const res = js_encode(input);
+          outEl.textContent = res.toString();
+          js_encode.destroy && js_encode.destroy();
+        } else {
+          const js_decode = self.pyodide.globals.get('js_decode');
+          const res = js_decode(input);
+          // res is a Python dict proxy
+          const hex = res.get('hex');
+          const text = res.get('text');
+          outEl.textContent = `hex: ${hex}\ntext: ${text}`;
+          res.destroy && res.destroy();
+          js_decode.destroy && js_decode.destroy();
+        }
+      } catch (err){
+        outEl.textContent = '오류: ' + err;
+      }
+    });
+
+    document.getElementById('run-test').addEventListener('click', async ()=>{
+      const outEl = document.getElementById('output');
+      outEl.textContent = '테스트 실행 중...';
+      try{
+        const fn = self.pyodide.globals.get('js_run_tests');
+        const res = fn();
+        // res is a list of tuples
+        let lines = [];
+        for(let i=0;i<res.length;i++){
+          const t = res.get(i);
+          const orig = t.get(0);
+          const tok = t.get(1);
+          const hex = t.get(2);
+          lines.push(`orig: ${orig} \n token: ${tok} \n back(hex): ${hex}\n`);
+          t.destroy && t.destroy();
+        }
+        outEl.textContent = lines.join('\n');
+        res.destroy && res.destroy();
+        fn.destroy && fn.destroy();
+      } catch(e){
+        outEl.textContent = '테스트 실패: ' + e;
+      }
+    });
+  </script>
+</body>
