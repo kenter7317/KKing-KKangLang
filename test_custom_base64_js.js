@@ -1,4 +1,3 @@
-// Node.js test for the custom Base64 Hangul algorithm
 const HANGUL_BITS = ['낑', '깡', '삐', '앙', '버', '거'];
 const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const START_DELIM = '뿡';
